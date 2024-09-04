@@ -1,17 +1,6 @@
-import sys
 import socket, os, random, threading, zmq, time, numpy
-#from multiprocessing import Process, Barrier
+from multiprocessing import Process, Barrier
 #from utils import *
-from Broadcast import *
-
-
-roundCounter = 0      # Contador de rodadas  
-acceptedProposal:int  # Chave da proposta aceita
-accPropoVal: str      # Valor da proposta aceita
-known_nodes = []      # Lista de nós conhecidos
-my_port:int           #Minha porta
-
-
 
 #---------------------------------------------------------------------------
 #-------------------------CÓDIGO DO CARA------------------------------------
@@ -22,7 +11,7 @@ BASE_PORT = 5550
 
 # Sends message with arg that permit probability
 def sendRegular(body, sender_id, target_id, push_socket, prob):
-    #see if need to instantiate
+    is_crashed
     if prob != 0:
         is_crashed = numpy.random.choice([True, False], p=[prob, 1 - prob])
 
@@ -35,8 +24,8 @@ def sendRegular(body, sender_id, target_id, push_socket, prob):
     push_socket.send_json(message)
 
 # Broadcast message without crash probability
-def broadcastRegular(body, sender_id, push_sockets_dict, prob, am_i_excluded=False):
-    for target_id in range(len(known_nodes)):
+def broadcastRegular(body, sender_id, numNodes, push_sockets_dict, prob, am_i_excluded=False):
+    for target_id in range(numNodes):
         push_socket = push_sockets_dict[target_id]
 
         if am_i_excluded and target_id == sender_id:
@@ -47,8 +36,8 @@ def broadcastRegular(body, sender_id, push_sockets_dict, prob, am_i_excluded=Fal
 
 
 
-def PaxosNode(my_port, prob):
-    proposalId = -1  # Proposer & Acceptor
+def PaxosNode(node_id, value, numNodes, prob, numRounds, barrier):
+    maxVotedRound = -1  # Proposer & Acceptor
     maxVotedVal = None  # Proposer & Acceptor
     proposeVal = None  # Only Proposer
     decision = None  # Only Proposer
@@ -56,41 +45,39 @@ def PaxosNode(my_port, prob):
     # Create PULL socket (1 socket) (use bind since it will receive messages from N nodes)
     context = zmq.Context()
     socket_pull = context.socket(zmq.PULL)
-    socket_pull.bind(f"tcp://localhost:{my_port}")
+    socket_pull.bind(f"tcp://127.0.0.1:{BASE_PORT + node_id}")
 
     # Create PUSH sockets (N sockets) (use connect since they will be used to send 1 message)
     push_sockets_dict = {}
 
-    for index in range(len(known_nodes)):
+    for target_id in range(numNodes):
         socket_push = context.socket(zmq.PUSH)
-        socket_push.connect(known_nodes[index])
-        push_sockets_dict[index] = socket_push
+        socket_push.connect(f"tcp://127.0.0.1:{BASE_PORT + target_id}")
+        push_sockets_dict[target_id] = socket_push
 
     # Wait for everyone finishing establishing their connections
     time.sleep(0.3)
 
     # Run algorithm
-    while True:
+    for r in range(numRounds):
 
-        is_proposer = random.randint(0,1)
+        is_proposer = r % numNodes == node_id
 
-        if bool(is_proposer):
-
-            value = random.randint(0, 8)
-
-            print(f"PROPOSER {my_port} in ROUND {proposalId} PROPOSED VALUE: {value}")
-            # Broadcast 'PREPARE'
+        if is_proposer:
+            print(f"PROPOSER OF ROUND {r} PROPOSED VALUE: {value}")
+            # Broadcast 'READY'
 
             time.sleep(0.3)
 
             broadcastRegular(
-                "PREPARE",
-                my_port,
+                "READY",
+                node_id,
+                numNodes,
                 push_sockets_dict,
                 prob,
             )
 
-        # Receive 'PREPARE|CRASH' from proposer
+        # Receive 'READY|CRASH' from proposer
         message_received = socket_pull.recv_json()
 
         # Parse message received
@@ -101,27 +88,27 @@ def PaxosNode(my_port, prob):
         time.sleep(0.3)
 
         # Phase1 --------------------------------------------------
-        promise_count = 0
+        join_count = 0
         will_propose = False
 
         if is_proposer:
             print(
-                f"PROPOSER OF {my_port} RECEIVED IN PREPARE PHASE: {message_received_body}"
+                f"PROPOSER OF {node_id} RECEIVED IN PREPARE PHASE: {message_received_body}"
             )
 
             # As a proposer:
             is_received_start = False
 
-            if "PREPARE" in message_received_body:
-                promise_count += 1
+            if "READY" in message_received_body:
+                join_count += 1
                 is_received_start = True
 
-            # Receive responses from N-1 acceptors ('PROMISE|CRASH')
+            # Receive responses from N-1 acceptors ('JOIN|CRASH')
 
-            received_proposalId = -1
+            received_maxVotedRound = -1
             received_maxVotedVal = -1
 
-            for _ in range(len(known_nodes)- 1):
+            for _ in range(numNodes - 1):
                 message_received = socket_pull.recv_json()
 
                 # Parse message received
@@ -130,58 +117,58 @@ def PaxosNode(my_port, prob):
                 message_received_to = message_received["to"]
 
                 print(
-                    f"PROPOSER OF {my_port} RECEIVED IN PREPARE PHASE: {message_received_body}"
+                    f"PROPOSER OF {node_id} RECEIVED IN PREPARE PHASE: {message_received_body}"
                 )
 
-                if "PROMISE" in message_received_body:
-                    promise_count += 1
+                if "JOIN" in message_received_body:
+                    join_count += 1
 
-                    # Incoming message "PROMISE {proposalId} {maxVotedVal}"
-                    parsed_promise = message_received_body.split(" ")
+                    # Incoming message "JOIN {maxVotedRound} {maxVotedVal}"
+                    parsed_join = message_received_body.split(" ")
 
-                    if int(parsed_promise[1]) > received_proposalId:
-                        # If incoming PROMISE's maxVotedVal is bigger than previous
+                    if int(parsed_join[1]) > received_maxVotedRound:
+                        # If incoming JOIN's maxVotedVal is bigger than previous
                         # Then update previous with incoming maxVotedVal, round too
-                        # This is basically for picking the PROMISE message with biggest proposalId
+                        # This is basically for picking the JOIN message with biggest maxVotedRound
                         # Then we can set proposeVal to this message's maxVotedVal
-                        received_proposalId = int(parsed_promise[1])
-                        received_maxVotedVal = int(parsed_promise[2])
+                        received_maxVotedRound = int(parsed_join[1])
+                        received_maxVotedVal = int(parsed_join[2])
 
-            # If majority promiseed
-            if promise_count > int(len(known_nodes) / 2):
+            # If majority joined
+            if join_count > int(numNodes / 2):
                 will_propose = True
 
-                # If proposer received 'PREPARE' from itself in the beginning
-                # And if proposalId is -1, then update proposeVal
+                # If proposer received 'READY' from itself in the beginning
+                # And if maxVotedRound is -1, then update proposeVal
                 if is_received_start:
-                    if proposalId == -1:
+                    if maxVotedRound == -1:
                         proposeVal = value
                     else:
                         # SUSPICIOUS
                         proposeVal = received_maxVotedVal
 
-                # If proposer didn't receive 'PREPARE' from itself in the beginning,
-                # Then set proposalId to the maximum proposalId came from PROMISEs
-                # And set maxVotedVal to the maxixmum maxVotedVal came from PROMISEs
+                # If proposer didn't receive 'READY' from itself in the beginning,
+                # Then set maxVotedRound to the maximum maxVotedRound came from JOINs
+                # And set maxVotedVal to the maxixmum maxVotedVal came from JOINs
                 else:
                     proposeVal = value
 
-            # If majority didn't promise
+            # If majority didn't join
             else:
                 will_propose = False
 
         elif not is_proposer:
             # As an acceptor:
-            print(f"ACCEPTOR {my_port} RECEIVED IN PREPARE PHASE: {message_received_body}")
+            print(f"ACCEPTOR {node_id} RECEIVED IN PREPARE PHASE: {message_received_body}")
 
-            if "PREPARE" in message_received_body:
+            if "READY" in message_received_body:
 
                 time.sleep(0.3)
 
-                # Send "PROMISE" to proposer
+                # Send "JOIN" to proposer
                 sendRegular(
-                f"PROMISE {proposalId} {maxVotedVal}",
-                    my_port,
+                   f"JOIN {maxVotedRound} {maxVotedVal}",
+                    node_id,
                     message_received_from,
                     push_sockets_dict[message_received_from],
                     prob,
@@ -189,13 +176,13 @@ def PaxosNode(my_port, prob):
 
             elif "CRASH" in message_received_body:
                 # If an acceptor receives 'CRASH', then it responds with 'CRASH' too
-                sendRegular(f"CRASH {my_port}",
-                    my_port,
+                sendRegular(f"CRASH {node_id}",
+                    node_id,
                     message_received_from,
                     push_sockets_dict[message_received_from],
                 )
 
-        #barrier.wait()
+        barrier.wait()
         # Phase2 --------------------------------------------------
 
         if is_proposer:
@@ -203,25 +190,27 @@ def PaxosNode(my_port, prob):
             time.sleep(0.3)
 
             if will_propose:
-                # Broadcast 'ACCEPT REQUEST'
+                # Broadcast 'PROPOSE'
                 broadcastRegular(
-                    f"ACCEPT REQUEST {proposeVal}",
-                    my_port,
+                    f"PROPOSE {proposeVal}",
+                    node_id,
+                    numNodes,
                     push_sockets_dict,
                     prob,
                 )
             else:
                 # Broadcast 'ROUNDCHANGE'
-                print(f"{my_port} CHANGED ROUND")
+                print(f"PROPOSER OF ROUND {r} CHANGED ROUND")
                 broadcastRegular(
                     "ROUNDCHANGE",
-                    my_port,
+                    node_id,
+                    numNodes,
                     push_sockets_dict,
                     0,
                 )
                 # Go for another round
 
-        # Receive 'ACCEPT REQUEST|CRASH|ROUNDCHANGE' from proposer
+        # Receive 'PROPOSE|CRASH|ROUNDCHANGE' from proposer
         message_received = socket_pull.recv_json()
 
         # Parse message received
@@ -233,25 +222,25 @@ def PaxosNode(my_port, prob):
             # As a proposer
             if will_propose:
                 # If proposer has proposed new value, then it will listen N responses
-                accept_count = 0
+                vote_count = 0
                 is_received_propose = False
 
                 if "ROUNDCHANGE" not in message_received_body:
                     print(
-                        f"PROPOSER OF {my_port} RECEIVED IN ACCEPT PHASE: {message_received_body}"
+                        f"PROPOSER OF {node_id} RECEIVED IN ACCEPT PHASE: {message_received_body}"
                     )
 
-                    if "ACCEPT REQUEST" in message_received_body:
-                        accept_count += 1
+                    if "PROPOSE" in message_received_body:
+                        vote_count += 1
                         is_received_propose = True
 
                     elif "CRASH" in message_received_body:
                         # TODO
                         pass
 
-                    # Receive responses from N-1 acceptors ('PROMISE|CRASH')
+                    # Receive responses from N-1 acceptors ('JOIN|CRASH')
 
-                    for _ in range(len(known_nodes) - 1):
+                    for _ in range(numNodes - 1):
                         message_received = socket_pull.recv_json()
 
                         # Parse message received
@@ -260,36 +249,37 @@ def PaxosNode(my_port, prob):
                         message_received_to = message_received["to"]
 
                         print(
-                            f"PROPOSER OF {my_port} RECEIVED IN ACCEPT PHASE: {message_received_body}"
+                            f"PROPOSER OF {node_id} RECEIVED IN ACCEPT PHASE: {message_received_body}"
                         )
 
-                        if "ACCEPT" in message_received_body:
-                            accept_count += 1
+                        if "VOTE" in message_received_body:
+                            vote_count += 1
 
                     if is_received_propose:
+                        maxVotedRound = r
                         maxVotedVal = proposeVal
 
-                    if accept_count > int(len(known_nodes) / 2):
+                    if vote_count > int(numNodes / 2):
                         decision = proposeVal
-                        print(f"PROPOSER OF {my_port} DECIDED ON VALUE: {decision}")
+                        print(f"PROPOSER OF {node_id} DECIDED ON VALUE: {decision}")
 
             pass
 
         elif not is_proposer:
             # As an acceptor
             time.sleep(0.3)
-            print(f"ACCEPTOR {my_port} RECEIVED IN ACCEPT PHASE: {message_received_body}")
+            print(f"ACCEPTOR {node_id} RECEIVED IN ACCEPT PHASE: {message_received_body}")
 
-            if "ACCEPT REQUEST" in message_received_body:
-                # send 'ACCEPT' as an acceptor
+            if "PROPOSE" in message_received_body:
+                # send 'VOTE' as an acceptor
                 sendRegular(
-                    "ACCEPT",
-                    my_port,
+                    "VOTE",
+                    node_id,
                     message_received_from,
                     push_sockets_dict[message_received_from],
                     prob,
-                ) 
-
+                )
+                maxVotedRound = r
                 maxVotedVal = int(message_received_body.split(" ")[1])
 
             elif "ROUNDCHANGE" in message_received_body:
@@ -297,44 +287,40 @@ def PaxosNode(my_port, prob):
             elif "CRASH" in message_received_body:
                 # If an acceptor receives 'CRASH', then it responds with 'CRASH' too
                 sendRegular(
-                    f"CRASH {my_port}",
-                    my_port,
+                    f"CRASH {node_id}",
+                    node_id,
                     message_received_from,
                     push_sockets_dict[message_received_from],
                 )
 
             pass
 
-        #barrier.wait()
+        barrier.wait()
         time.sleep(0.3)
-        proposalId +=1
         # Go for next round
     pass
 
 
 def main(args):
-    prob = float(args[1])
-    my_port = int(args[2])
+    print("RODOU")
+    numNodes = int(args[1])
+    prob = float(args[2])
+    numRounds = int(args[3])
 
-    doBroadcast(known_nodes, my_port)
+    barrier = Barrier(numNodes)
 
-    if len(known_nodes) > 1:
-        PaxosNode(my_port, prob)
-
-    '''# print(f"NUM NODES: {numNodes}, CRASH PROB: {prob}, NUM ROUNDS: {numRounds}")
-
-    
+    print(f"NUM NODES: {numNodes}, CRASH PROB: {prob}, NUM ROUNDS: {numRounds}")
 
     # Create processes
     # Each process represents a paxos node
     processes = []
 
-    for my_port in range(numNodes):
-        value = random.randint(0, 8)
+    for node_id in range(numNodes):
+        value = random.randint(0, 1)
         process = Process(
             target=PaxosNode,
             args=(
-                my_port,
+                node_id,
                 value,
                 numNodes,
                 prob,
@@ -349,12 +335,8 @@ def main(args):
 
     # Wait all paxos nodes to finish rounds
     for process in processes:
-        process.promise()
+        process.join()
 
-    pass'''
+    pass
 
-if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        print("Invalid command line arguments!")
-    else:
-        main(args=sys.argv)
+main()
