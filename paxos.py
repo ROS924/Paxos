@@ -9,7 +9,7 @@ import numpy
 
 PORTA = 6666
 
-# Envia mensagem com probabilidade de faha
+# Envia mensagem 
 def sendRegular(body, sender_id, target_id, push_socket, prob):
     if prob != 0:
         is_crashed = numpy.random.choice([True, False], p=[prob, 1 - prob])
@@ -24,7 +24,7 @@ def sendRegular(body, sender_id, target_id, push_socket, prob):
 
     push_socket.send_json(message)
 
-# Broadcast message without crash probability
+# Envia Broadcast 
 def broadcast(body, sender_id,numNodes, push_sockets_dict, prob, am_i_excluded=False):
     for target_id in range(numNodes):
         push_socket = push_sockets_dict[target_id]
@@ -37,17 +37,17 @@ def broadcast(body, sender_id,numNodes, push_sockets_dict, prob, am_i_excluded=F
 
 
 def PaxosNode(node_id, value, numNodes, prob, numRounds, barrier):
-    maxVotedRound = [-1]*numNodes  # Proposer & Acceptor
-    maxVotedVal = [-1]*numNodes  # Proposer & Acceptor
-    proposeVal = -1  # Only Proposer
-    decision = -1  # Only Proposer
+    maxVotedRound = [-1]*numNodes  # Id da Úlima proposta aceita
+    maxVotedVal = [-1]*numNodes  # Valor da última proposta aceita
+    proposeVal = -1  # Valor proposto
+    decision = -1  # Valor já aceito
 
-    # Create PULL socket (1 socket) (use bind since it will receive messages from N nodes)
+    # Socket para receber mensagens
     context = zmq.Context()
     socket_pull = context.socket(zmq.PULL)
     socket_pull.bind(f"tcp://127.0.0.1:{PORTA + node_id}")
 
-    # Create PUSH sockets (N sockets) (use connect since they will be used to send 1 message)
+    # Socket para enviar mensagens
     push_sockets_dict = {}
 
     for target_id in range(numNodes):
@@ -55,10 +55,10 @@ def PaxosNode(node_id, value, numNodes, prob, numRounds, barrier):
         socket_push.connect(f"tcp://127.0.0.1:{PORTA + target_id}")
         push_sockets_dict[target_id] = socket_push
 
-    # Wait for everyone finishing establishing their connections
+    #Aguarda todos os nós se conectarem
     time.sleep(0.3)
 
-    # Run algorithm
+    # Execução do algoritmo
     for r in range(numRounds):
 
         is_proposer = r % numNodes == node_id
@@ -77,33 +77,34 @@ def PaxosNode(node_id, value, numNodes, prob, numRounds, barrier):
                 push_sockets_dict=push_sockets_dict,
             )
 
-        # Receive 'PREPARE|CRASH' from proposer
+        
         message_received = socket_pull.recv_json()
 
-        # Parse message received
+        
         message_received_body = message_received["body"]
         message_received_from = message_received["from"]
         message_received_to = message_received["to"]
 
         time.sleep(0.3)
 
-        # Phase1 --------------------------------------------------
+        # Fase 1 --------------------------------------------------
         promise_count = 0
         will_propose = False
 
         if is_proposer:
+            # Atua como proponente
             print(
                 f"Propositor {node_id} enviou e recebeu na fase de preparação: {message_received_body}"
             )
 
-            # As a proposer:
+            
             is_received_start = False
 
             if "PREPARE" in message_received_body:
                 promise_count += 1
                 is_received_start = True
 
-            # Receive responses from N-1 acceptors ('PROMISE|CRASH')
+            # Recebe mensagem dos aceitadores ('PROMISE|CRASH')
 
             received_maxVotedRound = -1
             received_maxVotedVal = -1
@@ -111,7 +112,7 @@ def PaxosNode(node_id, value, numNodes, prob, numRounds, barrier):
             for _ in range(numNodes - 1):
                 message_received = socket_pull.recv_json()
 
-                # Parse message received
+                
                 message_received_body = message_received["body"]
                 message_received_from = message_received["from"]
                 message_received_to = message_received["to"]
@@ -123,49 +124,42 @@ def PaxosNode(node_id, value, numNodes, prob, numRounds, barrier):
                 if "PROMISE" in message_received_body:
                     promise_count += 1
 
-                    # Incoming message "PROMISE {maxVotedRound} {maxVotedVal}"
+                    # Recebendo promessa "PROMISE {maxVotedRound} {maxVotedVal}"
                     parsed_join = message_received_body.split(" ")
 
+
+                    # Compara os valores dos IDs das proposta e escolhe o maior como sua promessa
                     if int(parsed_join[1]) > received_maxVotedRound and len(parsed_join) >= 3:
-                        # If incoming PROMISE's maxVotedVal is bigger than previous
-                        # Then update previous with incoming maxVotedVal, round too
-                        # This is basically for picking the PROMISE message with biggest maxVotedRound
-                        # Then we can set proposeVal to this message's maxVotedVal
                         received_maxVotedRound = int(parsed_join[1])
                         received_maxVotedVal = int(parsed_join[4])
 
-            # If majority joined
+            # Quando a maioria dos nós promete ao propenente
             if promise_count > int(numNodes / 2):
                 will_propose = True
 
-                # If proposer received 'PREPARE' from itself in the beginning
-                # And if maxVotedRound is -1, then update proposeVal
+                # Aceita o próprio valor proposto
                 if is_received_start:
                     if maxVotedRound[node_id] == -1:
                         proposeVal = value
                     else:
-                        # SUSPICIOUS
                         proposeVal = received_maxVotedVal
 
-                # If proposer didn't receive 'PREPARE' from itself in the beginning,
-                # Then set maxVotedRound to the maximum maxVotedRound came from PROMISEs
-                # And set maxVotedVal to the maxixmum maxVotedVal came from PROMISEs
+                # Aceita o valor que foi aceito pelos outros nós que não foi proposto por si próprio
                 else:
                     proposeVal = value
 
-            # If majority didn't join
             else:
                 will_propose = False
 
         elif not is_proposer:
-            # As an acceptor:
+            # Atua como aceitador
             print(f"Aceitador {node_id} recebeu na fase de preparação: {message_received_body}")
 
             if "PREPARE" in message_received_body:
 
                 time.sleep(0.3)
                 idU = message_received_body.split(" ")[1]
-                # Send "PROMISE" to proposer
+                # Envia promessa ao proponente
                 if maxVotedRound[node_id] == -1:
                     sendRegular(
                         body=f"PROMISE {r}",
@@ -184,7 +178,7 @@ def PaxosNode(node_id, value, numNodes, prob, numRounds, barrier):
                     )
 
             elif "CRASH" in message_received_body:
-                # If an acceptor receives 'CRASH', then it responds with 'CRASH' too
+                # Responde com falha ao receber uma falha
                 sendRegular(
                     body=f"CRASH {node_id}",
                     sender_id=node_id,
@@ -194,10 +188,10 @@ def PaxosNode(node_id, value, numNodes, prob, numRounds, barrier):
                 )
 
         barrier.wait()
-        # Phase2 --------------------------------------------------
+        # Fase 2 --------------------------------------------------
 
         if is_proposer:
-            # As a proposer
+            # Atua como proponente
             time.sleep(0.3)
 
             if will_propose:
@@ -219,20 +213,19 @@ def PaxosNode(node_id, value, numNodes, prob, numRounds, barrier):
                     push_sockets_dict=push_sockets_dict,
                     prob=0
                 )
-                # Go for another round
+                # Muada de rodade
 
-        # Receive 'ACCEPT_REQUEST|CRASH|ROUNDCHANGE' from proposer
+        # Recebe mensagem do proponente
         message_received = socket_pull.recv_json()
 
-        # Parse message received
         message_received_body = message_received["body"]
         message_received_from = message_received["from"]
         message_received_to = message_received["to"]
 
         if is_proposer:
-            # As a proposer
+            # Atua como proponente
             if will_propose:
-                # If proposer has proposed new value, then it will listen N responses
+                # Envia o accept request e espera o accepted
                 vote_count = 0
                 is_received_propose = False
 
@@ -279,13 +272,13 @@ def PaxosNode(node_id, value, numNodes, prob, numRounds, barrier):
             pass
 
         elif not is_proposer:
-            # As an acceptor
+            # Atua como aceitador
             time.sleep(0.3)
             print(f"Aceitador {node_id} recebeu na fase de aceitação: {message_received_body}")
 
 
             if "ACCEPT_REQUEST" in message_received_body:
-                # send 'ACCEPT' as an acceptor
+                # Envia accepted
                 valorRecebido = message_received_body.split(" ")[2]
                 sendRegular(
                     body=f"ACCEPT {r} {valorRecebido}",
@@ -300,7 +293,7 @@ def PaxosNode(node_id, value, numNodes, prob, numRounds, barrier):
             elif "ROUNDCHANGE" in message_received_body:
                 pass
             elif "CRASH" in message_received_body:
-                # If an acceptor receives 'CRASH', then it responds with 'CRASH' too
+                # Envia uma falha ao receber uma falha
                 sendRegular(
                     body=f"CRASH {node_id}",
                     sender_id=node_id,
@@ -313,7 +306,7 @@ def PaxosNode(node_id, value, numNodes, prob, numRounds, barrier):
 
         barrier.wait()
         time.sleep(0.3)
-        # Go for next round
+        # Vai para próxima rodada
     pass
 
 
@@ -326,8 +319,7 @@ def main(args):
 
     print(f"Numero de nodes: {numNodes}, Probabilidade de crash: {prob}, Numero de rodadas: {numRounds}\n")
 
-    # Create processes
-    # Each process represents a paxos node
+    # Cria processos como nós do paxos
     processes = []
 
     for node_id in range(numNodes):
@@ -348,7 +340,7 @@ def main(args):
     for process in processes:
         process.start()
 
-    # Wait all paxos nodes to finish rounds
+    # Espera todos os nós terminarem suas rodadas
     for process in processes:
         process.join()
 
