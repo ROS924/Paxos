@@ -64,7 +64,7 @@ def PaxosNode(node_id, value, numNodes, prob, numRounds, barrier):
         is_proposer = r % numNodes == node_id
 
         if is_proposer:
-            print(f"Rodada {r} proposta com valor inicial: {value}")
+            print(f"\nRodada {r} proposta com valor inicial: {value}")
             # Broadcast 'PREPARE'
 
             time.sleep(0.3)
@@ -265,9 +265,9 @@ def PaxosNode(node_id, value, numNodes, prob, numRounds, barrier):
 
                     if vote_count > int(numNodes / 2):
                         decision = proposeVal
-                        print(f"Foi decidido o valor: {decision} para a rodada {r}\n")
+                        print(f"Foi decidido o valor: {decision} para a rodada {r}")
                     else:
-                       print(f"Mantém-se o valor decidido anteriormente: {proposeVal} para a rodada {r}\n") 
+                       print(f"Mantém-se o valor decidido anteriormente: {proposeVal} para a rodada {r}") 
 
             pass
 
@@ -317,7 +317,7 @@ def main(args):
 
     barrier = Barrier(numNodes)
 
-    print(f"Numero de nodes: {numNodes}, Probabilidade de crash: {prob}, Numero de rodadas: {numRounds}\n")
+    print(f"Numero de nodes: {numNodes}, Probabilidade de crash: {prob}, Numero de rodadas: {numRounds}")
 
     # Cria processos como nós do paxos
     processes = []
